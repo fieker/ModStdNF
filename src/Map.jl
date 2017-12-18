@@ -180,7 +180,7 @@ function induce_reco!(last::Array{Nemo.Generic.MPoly{nf_elem}, 1}, Res::Array{Ne
   return fl
 end
 
-function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1}, rec = reco)
+function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1}, rec = reco_den_alg)
   ZX, X = FlintZZ["X"]
   p = 2^30
   Res = []
