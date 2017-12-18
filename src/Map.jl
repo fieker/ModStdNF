@@ -72,14 +72,27 @@ function from_singular_crt(a::Singular.sideal, Res::Array{Nemo.Generic.MPoly{nf_
   p = fmpz(Singular.characteristic(parent(a[1])))
 
   for i=1:Singular.ngens(a)
-    res = Kx()
-    fit!(res, length(a[i]))
     j = 1
+    over = Kx(0)
     for (c, e) in Singular.coeffs_expos(a[i])
-      Res[i].coeffs[j] = Hecke.induce_crt(K(Int(c)), p, Res[i].coeffs[j], pp)[1]
+      if any(k -> e[k] != Res[i].exps[k, i], 1:N)
+        if j==1
+          error("unlucky prime (wrong leading coeff) found")
+        end
+        Res[i].coeffs[j] = Hecke.induce_crt(K(0), p, Res[i].coeffs[j], pp)[1]
+        fit!(over, length(over)+1)
+        l = length(over)+1 
+        over.coeffs[l] = Hecke.induce_crt(K(Int(c)), p, K(0), pp)[1]
+        for k=1:N
+          over.exps[k, l] = e[k]
+        end
+        over.length += 1
+      else  
+        Res[i].coeffs[j] = Hecke.induce_crt(K(Int(c)), p, Res[i].coeffs[j], pp)[1]
+      end
       j += 1
     end
-    res.length = j-1
+    Res[i] += over
   end
   return Res
 end
@@ -93,7 +106,6 @@ function reco_init(K::AnticNumberField, p::fmpz, f::fmpz_poly)
     M[i, 1] = -coeff(r, 0)
     q, r = divrem(r*t,  f)
   end
-  @show M
   M = Nemo.lll(M)
   Mi, d = Nemo.pseudo_inv(M)
   return (M, Mi, d)
@@ -109,7 +121,66 @@ function reco(data, f::nf_elem)
   return f-sum(b[i]*y[1, i] for i=1:degree(K))
 end
 
-function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1})
+function reco_den_int(data, f::nf_elem)
+  n = degree(parent(f))
+  M = MatrixSpace(FlintZZ, n+1, n+1)()
+  f = reco(data, f)
+  Hecke._copy_matrix_into_matrix(M, 2, 2, data[1])
+  M[1,1] = 1
+  for i=1:n
+    M[1, i+1] = numerator(coeff(f, i-1))
+  end
+
+  L = lll(M) #need destructive version!
+  zero!(f)
+  b = basis(parent(f))
+  for i=1:n
+    f += b[i]*L[1, i+1]
+  end
+  return f//L[1,1]
+end
+
+function reco_den_alg(data, f::nf_elem)
+  n = degree(parent(f))
+  M = MatrixSpace(FlintZZ, 2*n, 2*n)(1)
+  f = reco(data, f)
+  Hecke._copy_matrix_into_matrix(M, n+1, n+1, data[1])
+  R = representation_mat(f)
+  Hecke._copy_matrix_into_matrix(M, 1, n+1, R)
+  L = lll(M) #need destructive version!
+  zero!(f)
+  d = f
+  b = basis(parent(f))
+  for i=1:n
+    f += b[i]*L[1, i+n]
+    d += b[i]*L[1, i]
+  end
+#  @show f, d
+  return f//d
+end
+
+function induce_reco!(last::Array{Nemo.Generic.MPoly{nf_elem}, 1}, Res::Array{Nemo.Generic.MPoly{nf_elem}, 1}, K::AnticNumberField, p::fmpz, f::fmpz_poly, rec = reco_den_alg)
+  data = reco_init(K, p, f)
+  Kx = parent(Res[1])
+  fl = true
+  for i=1:length(Res)
+    r = deepcopy(Res[i])
+    for j=1:Res[i].length
+      r.coeffs[j] = rec(data, Res[i].coeffs[j])
+    end
+    if i > length(last) || r != last[i]
+      fl = false
+    end
+    if i > length(last)
+      push!(last, r)
+    else
+      last[i] = r
+    end
+  end
+  return fl
+end
+
+function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1}, rec = reco)
   ZX, X = FlintZZ["X"]
   p = 2^30
   Res = []
@@ -117,6 +188,7 @@ function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1})
 
   Kx = parent(I[1])
   K = base_ring(Kx)
+  last = elem_type(Kx)[]
 
   nb = 100
   while true
@@ -139,14 +211,10 @@ function modstd(I::Array{Nemo.Generic.MPoly{nf_elem}, 1})
       pp *= p
     end
     if nbits(pp) > nb
-      data = reco_init(K, pp, f)
-      for i=1:length(Res)
-        for j=1:Res[i].length
-          Res[i].coeffs[j] = reco(data, Res[i].coeffs[j])
-        end
+      if induce_reco!(last, Res, K, pp, f, rec)
+        return last
       end
       nb *= 2
-      @show Res
     end
     if nbits(pp) > 1000
       return Res, pp, f
